@@ -1,8 +1,10 @@
-#include "esphome/core/log.h"
 #include "samsung_ac.h"
 #include "debug_mqtt.h"
 #include "util.h"
+#include "log.h"
+#include <algorithm>
 #include <vector>
+#include <thread>
 
 namespace esphome
 {
@@ -10,19 +12,16 @@ namespace esphome
   {
     void Samsung_AC::setup()
     {
-      ESP_LOGW(TAG, "setup");
     }
 
     void Samsung_AC::update()
     {
-      ESP_LOGW(TAG, "update");
-
       debug_mqtt_connect(debug_mqtt_host, debug_mqtt_port, debug_mqtt_username, debug_mqtt_password);
 
       // Waiting for first update before beginning processing data
       if (data_processing_init)
       {
-        ESP_LOGCONFIG(TAG, "Data Processing starting");
+        LOGC("Data Processing starting");
         data_processing_init = false;
       }
 
@@ -31,7 +30,7 @@ namespace esphome
       {
         devices += devices.length() > 0 ? ", " + pair.second->address : pair.second->address;
       }
-      ESP_LOGCONFIG(TAG, "Configured devices: %s", devices.c_str());
+      LOGC("Configured devices: %s", devices.c_str());
 
       std::string knownIndoor = "";
       std::string knownOutdoor = "";
@@ -51,18 +50,18 @@ namespace esphome
           break;
         }
       }
-      ESP_LOGCONFIG(TAG, "Discovered devices:");
-      ESP_LOGCONFIG(TAG, "  Outdoor: %s", (knownOutdoor.length() == 0 ? "-" : knownOutdoor.c_str()));
-      ESP_LOGCONFIG(TAG, "  Indoor:  %s", (knownIndoor.length() == 0 ? "-" : knownIndoor.c_str()));
+      LOGC("Discovered devices:");
+      LOGC("  Outdoor: %s", (knownOutdoor.length() == 0 ? "-" : knownOutdoor.c_str()));
+      LOGC("  Indoor:  %s", (knownIndoor.length() == 0 ? "-" : knownIndoor.c_str()));
       if (knownOther.length() > 0)
-        ESP_LOGCONFIG(TAG, "  Other:   %s", knownOther.c_str());
+        LOGC("  Other:   %s", knownOther.c_str());
     }
 
     void Samsung_AC::register_device(Samsung_AC_Device *device)
     {
       if (find_device(device->address) != nullptr)
       {
-        ESP_LOGW(TAG, "There is already and device for address %s registered.", device->address.c_str());
+        LOGW("There is already and device for address %s registered.", device->address.c_str());
         return;
       }
 
@@ -73,11 +72,28 @@ namespace esphome
     {
     }
 
-    void Samsung_AC::publish_data(std::vector<uint8_t> &data)
+    void Samsung_AC::publish_data(std::vector<uint8_t> &data, uint8_t id)
     {
-      ESP_LOGW(TAG, "write %s", bytes_to_hex(data).c_str());
-      this->write_array(data);
-      this->flush();
+      const uint32_t now = millis();
+
+      OutgoingData outData;
+      outData.data = data;
+      outData.id = id;
+      outData.nextRetry = 0;
+      outData.retries = 0;
+      outData.timeout = now + sendTimeout;
+      send_queue_.push_back(outData);
+    }
+
+    void Samsung_AC::ack_data(uint8_t id)
+    {
+        if (send_queue_.size() > 0)
+        {
+          auto senddata = send_queue_.front();
+          if (senddata.id == id) {
+            send_queue_.pop_front();
+          }
+        }
     }
 
     void Samsung_AC::loop()
@@ -85,41 +101,111 @@ namespace esphome
       if (data_processing_init)
         return;
 
-      const uint32_t now = millis();
-      if (data_.size() > 0 && (now - last_transmission_ >= 500))
-      {
-        ESP_LOGW(TAG, "Last transmission too long ago. Reset RX index.");
-        data_.clear();
-      }
+      // if more data is expected, do not allow anything to be written
+      if (!read_data())
+        return;
 
       // If there is no data we use the time to send
-      if (!available())
+      write_data();
+    }
+
+    uint16_t Samsung_AC::skip_data()
+    {
+      // Skip over filler data or broken packets
+      // Example:
+      // 320037d8fedbff81cb7ffbfd808d00803f008243000082350000805e008031008248ffff801a0082d400000b6a34 f9f6f1f9f9 32000e200002
+      // Note that first part is a mangled packet, then regular filler data, then start of a new packet
+      // and that one new proper packet will continue with the next data read
+
+      // find next value of 0x32, and retry with that one
+      for (uint16_t i = 1; i < data_.size(); i++)
       {
-        if (send_queue_.size() > 0)
+        if (data_[i] == 0x32)
         {
-          auto senddata = send_queue_.front();
-          publish_data(senddata);
-          send_queue_.pop();
+          return i;
         }
-
-        return; // nothing in uart-input-buffer, end here
       }
+      return data_.size();
+    }
 
-      last_transmission_ = now;
+    bool Samsung_AC::read_data()
+    {
+      // read as long as there is anything to read
       while (available())
       {
         uint8_t c;
-        if (!read_byte(&c))
-          continue;
-        if (data_.size() == 0 && c != 0x32)
-          continue; // skip until start-byte found
-
-        data_.push_back(c);
-
-        if (process_data(data_, this) == DataResult::Clear)
+        if (read_byte(&c))
         {
-          data_.clear();
-          break; // wait for next loop
+          data_.push_back(c);
+        }
+      }
+
+      if (data_.size() == 0)
+        return true;
+
+      const uint32_t now = millis();
+
+      auto result = process_data(data_, this);
+      if (result.type == DecodeResultType::Fill)
+        return false;
+
+      uint16_t skipBytes = data_.size();
+      if (result.type == DecodeResultType::Processed)
+        // number of bytes processed by protocol from the buffer
+        skipBytes = result.bytes;
+      else if (result.type == DecodeResultType::Skip)
+        // find next potential packet start byte
+        skipBytes = skip_data();
+
+      if(result.type == DecodeResultType::Skip)
+        LOG_RAW_DISCARDED(">>",  now-last_transmission_, data_, 0, skipBytes);
+      else 
+        LOG_RAW(">>",  now-last_transmission_, data_, 0, skipBytes);
+
+      if (skipBytes == data_.size())
+        data_.clear();
+      else
+      {
+        std::move(begin(data_) + skipBytes, end(data_), begin(data_));
+        data_.resize(data_.size() - skipBytes);
+      }
+      last_transmission_ = now;
+
+      return false;
+    }
+
+    void Samsung_AC::write_data()
+    {
+      if (send_queue_.size() == 0)
+        return;
+
+      auto senddata = send_queue_.front();
+
+      const uint32_t now = millis();
+      if (senddata.timeout <= now && senddata.retries >= minRetries) {
+        LOGE("Packet sending timeout %d after %d retries", senddata.id, senddata.retries);
+        send_queue_.pop_front();
+        return;
+      }
+
+      if (now-last_transmission_ > silenceInterval && senddata.nextRetry < now)
+      {
+        if (senddata.nextRetry > 0){
+          LOGW("Retry sending packet %d", senddata.id);
+          senddata.retries++;
+        }
+
+        LOG_RAW("<<",  now-last_transmission_,  senddata.data);
+
+        last_transmission_ = now;
+        senddata.nextRetry = now + retryInterval;
+
+        this->write_array(senddata.data);
+        this->flush();
+
+        send_queue_.pop_front();
+        if (senddata.id > 0) {
+          send_queue_.push_front(senddata);
         }
       }
     }

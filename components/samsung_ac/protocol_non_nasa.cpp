@@ -2,9 +2,9 @@
 #include <map>
 #include <cmath>
 #include <iostream>
-#include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 #include "util.h"
+#include "log.h"
 #include "protocol_non_nasa.h"
 
 std::map<std::string, esphome::samsung_ac::NonNasaCommand20> last_command20s_;
@@ -155,21 +155,18 @@ namespace esphome
 
         DecodeResult NonNasaDataPacket::decode(std::vector<uint8_t> &data)
         {
-            if (data[0] != 0x32)
-                return DecodeResult::InvalidStartByte;
-
-            if (data[data.size() - 1] != 0x34)
-                return DecodeResult::InvalidEndByte;
-
             if (data.size() != 7 && data.size() != 14)
-                return DecodeResult::UnexpectedSize;
+                return { DecodeResultType::Skip };
+
+            if (data[0] != 0x32 || data[data.size() - 1] != 0x34)
+                return { DecodeResultType::Skip };
 
             auto crc_expected = build_checksum(data);
             auto crc_actual = data[data.size() - 2];
             if (crc_actual != build_checksum(data))
             {
-                ESP_LOGW(TAG, "NonNASA: invalid crc - got %d but should be %d: %s", crc_actual, crc_expected, bytes_to_hex(data).c_str());
-                return DecodeResult::CrcError;
+                LOGW("NonNASA: invalid crc - got %d but should be %d: %s", crc_actual, crc_expected, bytes_to_hex(data).c_str());
+                return { DecodeResultType::Skip };
             }
 
             src = long_to_hex(data[1]);
@@ -192,7 +189,7 @@ namespace esphome
                 if (command20.wind_direction == (NonNasaWindDirection)0)
                     command20.wind_direction = NonNasaWindDirection::Stop;
 
-                return DecodeResult::Ok;
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             case NonNasaCommand::CmdC0: // outdoor unit data
             {
@@ -204,17 +201,17 @@ namespace esphome
                 commandC0.outdoor_unit_outdoor_temp_c = data[8] - 55;
                 commandC0.outdoor_unit_discharge_temp_c = data[10] - 55;
                 commandC0.outdoor_unit_condenser_mid_temp_c = data[11] - 55;
-                return DecodeResult::Ok;
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             case NonNasaCommand::CmdC1: // outdoor unit data
             {
                 commandC1.outdoor_unit_sump_temp_c = data[8] - 55;
-                return DecodeResult::Ok;
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             case NonNasaCommand::CmdC6:
             {
                 commandC6.control_status = data[4];
-                return DecodeResult::Ok;
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             case NonNasaCommand::CmdF0: // outdoor unit data
             {
@@ -228,7 +225,7 @@ namespace esphome
                 commandF0.inverter_current_frequency_hz = data[7];
                 commandF0.outdoor_unit_bldc_fan = data[8] & 0b00000011; // not sure if correct, i have no ou with BLDC-fan
                 commandF0.outdoor_unit_error_code = data[10];
-                return DecodeResult::Ok;
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             case NonNasaCommand::CmdF1: // outdoor unit eev-values
             {
@@ -236,7 +233,7 @@ namespace esphome
                 commandF1.outdoor_unit_EEV_B = (data[6] * 256) + data[7];
                 commandF1.outdoor_unit_EEV_C = (data[8] * 256) + data[9];
                 commandF1.outdoor_unit_EEV_D = (data[10] * 256) + data[11];
-                return DecodeResult::Ok;
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             case NonNasaCommand::CmdF3: // power consumption
             {
@@ -247,17 +244,17 @@ namespace esphome
                 // DC-current to the inverter of outdoor-unit in A
                 commandF3.inverter_current_a = (float)data[8] / 10;
                 // voltage of the DC-link to inverter in V
-                commandF3.inverter_voltage_v = (float)data[9] * 2;
+                commandF3.inverter_voltage_v = (float)data[9] * 2; 
                 // Power consumption of the outdoo unit inverter in W
-                commandF3.inverter_power_w = commandF3.inverter_current_a * commandF3.inverter_voltage_v;
-                return DecodeResult::Ok;
+                commandF3.inverter_power_w = commandF3.inverter_current_a * commandF3.inverter_voltage_v; 
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             default:
             {
                 commandRaw.length = data.size() - 4 - 1;
                 auto begin = data.begin() + 4;
                 std::copy(begin, begin + commandRaw.length, commandRaw.data);
-                return DecodeResult::Ok;
+                return { DecodeResultType::Processed, (uint16_t) data.size() };
             }
             }
         }
@@ -415,12 +412,12 @@ namespace esphome
 
             if (request.alt_mode)
             {
-                ESP_LOGW(TAG, "change altmode is currently not implemented");
+                LOGW("change altmode is currently not implemented");
             }
 
             if (request.swing_mode)
             {
-                ESP_LOGW(TAG, "change swingmode is currently not implemented");
+                LOGW("change swingmode is currently not implemented");
             }
 
             nonnasa_requests.push(req);
@@ -473,18 +470,17 @@ namespace esphome
             while (nonnasa_requests.size() > 0)
             {
                 delay(delay_ms);
-                auto data = nonnasa_requests.front().encode();
-                target->publish_data(data);
+                auto packet = nonnasa_requests.front();
+                //LOG_PACKET_SEND("SEND", packet);
+                auto data = packet.encode();
+                target->publish_data(data, 0);
                 nonnasa_requests.pop();
             }
         }
 
         void process_non_nasa_packet(MessageTarget *target)
         {
-            if (debug_log_packets)
-            {
-                ESP_LOGW(TAG, "MSG: %s", nonpacket_.to_string().c_str());
-            }
+            LOG_PACKET_RECV("RECV", nonpacket_);
 
             target->register_address(nonpacket_.src);
 
@@ -507,10 +503,10 @@ namespace esphome
                 // After cmd F8 (src:c8 dst:f0) is a lage gap in communication, time to send data
                 if (nonpacket_.src == "c8" && nonpacket_.dst == "f0")
                 {
-                    // the communication needs a delay from cmdf8 to send the data.
-                    // series of test-delay-times: 1ms: no reaction, 7ms reactions half the time, 10ms very often a reaction (95%) -> delay on 20ms should be safe
-                    // the gap is around ~300ms
-                    send_requests(target, 20);
+                                            // the communication needs a delay from cmdf8 to send the data.
+                        // series of test-delay-times: 1ms: no reaction, 7ms reactions half the time, 10ms very often a reaction (95%) -> delay on 20ms should be safe
+                        // the gap is around ~300ms
+                        send_requests(target, 20);
                 }
             }
             else if (nonpacket_.cmd == NonNasaCommand::CmdC6)
