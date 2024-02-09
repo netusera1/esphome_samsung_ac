@@ -43,9 +43,6 @@ namespace esphome
             return AddressType::Other;
         }
 
-        Protocol *nasaProtocol = new NasaProtocol();
-        Protocol *nonNasaProtocol = new NonNasaProtocol();
-
         Protocol *get_protocol(const std::string &address)
         {
             if (!is_nasa_address(address))

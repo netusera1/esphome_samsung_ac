@@ -72,7 +72,7 @@ namespace esphome
     {
     }
 
-    void Samsung_AC::publish_data(std::vector<uint8_t> &data, uint8_t id)
+    void Samsung_AC::publish_data(uint8_t id, std::vector<uint8_t> &data, DataCallback *callback)
     {
       const uint32_t now = millis();
 
@@ -82,6 +82,7 @@ namespace esphome
       outData.nextRetry = 0;
       outData.retries = 0;
       outData.timeout = now + sendTimeout;
+      outData.callback = callback;
       send_queue_.push_back(outData);
     }
 
@@ -92,6 +93,7 @@ namespace esphome
           auto senddata = send_queue_.front();
           if (senddata.id == id) {
             send_queue_.pop_front();
+            senddata.callback->data_sent(id);
           }
         }
     }
@@ -185,6 +187,7 @@ namespace esphome
       if (senddata.timeout <= now && senddata.retries >= minRetries) {
         LOGE("Packet sending timeout %d after %d retries", senddata.id, senddata.retries);
         send_queue_.pop_front();
+        senddata.callback->data_timeout(senddata.id);
         return;
       }
 

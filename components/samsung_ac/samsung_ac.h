@@ -36,6 +36,7 @@ namespace esphome
       uint32_t nextRetry;
       uint32_t timeout;
       uint8_t retries;
+      DataCallback *callback;
     };
 
     class Samsung_AC : public PollingComponent,
@@ -81,7 +82,7 @@ namespace esphome
         return millis();
       }
 
-      void /*MessageTarget::*/ publish_data(std::vector<uint8_t> &data, uint8_t id);
+      void /*MessageTarget::*/ publish_data(uint8_t id, std::vector<uint8_t> &data, DataCallback *callback);
 
       void /*MessageTarget::*/ ack_data(uint8_t id);
 

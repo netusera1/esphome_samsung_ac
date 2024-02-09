@@ -473,7 +473,7 @@ namespace esphome
                 auto packet = nonnasa_requests.front();
                 //LOG_PACKET_SEND("SEND", packet);
                 auto data = packet.encode();
-                target->publish_data(data, 0);
+                target->publish_data(0, data, nullptr);
                 nonnasa_requests.pop();
             }
         }
@@ -518,5 +518,8 @@ namespace esphome
                 }
             }
         }
+
+        NonNasaProtocol *nonNasaProtocol = new NonNasaProtocol();
+
     } // namespace samsung_ac
 } // namespace esphome

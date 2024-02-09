@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <iostream>
+#include <queue>
 #include "protocol.h"
 
 namespace esphome
@@ -159,16 +160,38 @@ namespace esphome
             std::string to_string();
         };
 
+        class InflightPacket
+        {
+        public:
+            InflightPacket(Packet packet) : packet_(packet) {};
+            Packet& get_packet();
+        protected:
+            Packet packet_;
+        };
+
         DecodeResult try_decode_nasa_packet(std::vector<uint8_t> data);
+        
         void process_nasa_packet(MessageTarget *target);
 
-        class NasaProtocol : public Protocol
+        class NasaProtocol :
+            public Protocol,
+            public DataCallback
         {
         public:
             NasaProtocol() = default;
 
             void publish_request(MessageTarget *target, const std::string &address, ProtocolRequest &request) override;
+            void data_sent(uint8_t id) override;
+            void data_timeout(uint8_t id) override;
+            MessageSet &adjust_message_value(std::string source, MessageSet &message);
+
+        protected:
+            std::deque<InflightPacket> inflight_packets_;
         };
+
+        extern NasaProtocol *nasaProtocol;
 
     } // namespace samsung_ac
 } // namespace esphome
+
+

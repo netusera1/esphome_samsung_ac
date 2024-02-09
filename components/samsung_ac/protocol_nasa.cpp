@@ -451,8 +451,56 @@ namespace esphome
 
             LOG_PACKET_SEND("Publish packet", packet);
 
+            InflightPacket inflight(packet);
+            inflight_packets_.push_front(inflight);
+
             auto data = packet.encode();
-            target->publish_data(data, packet.commad.packetNumber);
+            target->publish_data(packet.commad.packetNumber, data, this);
+        }
+
+        Packet& InflightPacket::get_packet()
+        {
+            return this->packet_;
+        }
+
+        void NasaProtocol::data_sent(uint8_t id)
+        {
+            for (auto it = inflight_packets_.begin();  it != inflight_packets_.end(); )
+            {
+                if(it->get_packet().commad.packetNumber == id) 
+                {
+                    it = inflight_packets_.erase(it);
+                    return;
+                }
+                else ++it;
+            }
+        }
+
+        void NasaProtocol::data_timeout(uint8_t id)
+        {
+            this->data_sent(id);
+        }
+
+        /** if there are inflight packets, use their values instead */
+        MessageSet& NasaProtocol::adjust_message_value(std::string source, MessageSet &message)
+        {
+            for (auto &inflight : inflight_packets_)
+            {
+                auto &packet = inflight.get_packet();
+                // if it comes from the address that the packet was sent to
+                if (packet.da.to_string() == source)
+                {
+                    for (auto &inflightMessage : packet.messages)
+                    {
+                        if (inflightMessage.messageNumber == message.messageNumber)
+                        {
+                            LOGD("Reporting inflight value %s = %d", inflightMessage.to_string().c_str());
+                            return inflightMessage;
+                        }
+                    }
+                }
+            }
+            return message;
         }
 
         Mode operation_mode_to_mode(int value)
@@ -768,6 +816,7 @@ namespace esphome
 
             for (auto &message : packet_.messages)
             {
+                message = nasaProtocol->adjust_message_value(source, message);
                 process_messageset(source, dest, message, target);
             }
         }
@@ -1209,6 +1258,8 @@ namespace esphome
             }
             return;
         }
+
+        NasaProtocol *nasaProtocol = new NasaProtocol();
 
     } // namespace samsung_ac
 } // namespace esphome

@@ -198,5 +198,8 @@ namespace esphome
 
             void publish_request(MessageTarget *target, const std::string &address, ProtocolRequest &request) override;
         };
+
+        extern NonNasaProtocol *nonNasaProtocol;
+
     } // namespace samsung_ac
 } // namespace esphome

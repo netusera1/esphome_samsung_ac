@@ -60,11 +60,18 @@ namespace esphome
             All = 3
         };
 
+        class DataCallback
+        {
+        public:
+            virtual void data_sent(uint8_t id) = 0;
+            virtual void data_timeout(uint8_t id) = 0;
+        };
+
         class MessageTarget
         {
         public:
             virtual uint32_t get_miliseconds() = 0;
-            virtual void publish_data(std::vector<uint8_t> &data, uint8_t id) = 0;
+            virtual void publish_data(uint8_t id, std::vector<uint8_t> &data, DataCallback *callback) = 0;
             virtual void ack_data(uint8_t id) = 0;
             virtual void register_address(const std::string address) = 0;
             virtual void set_power(const std::string address, bool value) = 0;
