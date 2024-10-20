@@ -21,13 +21,13 @@ namespace esphome
     const uint16_t silenceInterval = 100;
 
     // minimum time before a retry attempt
-    const uint16_t retryInterval = 500;
+    const uint16_t retryInterval = 100;
 
     // minimum number of retries, even beyond timeout
     const uint8_t minRetries = 1;
 
     // maximum time to wait before discarding command
-    const uint16_t sendTimeout = 4000;
+    const uint16_t sendTimeout = 10000;
 
     struct OutgoingData
     {
